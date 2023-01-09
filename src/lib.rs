@@ -160,6 +160,21 @@ use std::pin::Pin;
 use std::rc::Rc;
 use std::task::{Context, Poll};
 
+#[derive(Debug, Clone)]
+pub enum RegistryOwnedOrStatic {
+    Owned(Registry),
+    Static(&'static Registry),
+}
+
+impl AsRef<Registry> for RegistryOwnedOrStatic {
+    fn as_ref(&self) -> &Registry {
+        match self {
+            RegistryOwnedOrStatic::Owned(registry) => registry,
+            RegistryOwnedOrStatic::Static(registry) => registry,
+        }
+    }
+}
+
 #[derive(Debug)]
 /// Builder to create new PrometheusMetrics struct.HistogramVec
 ///
@@ -168,7 +183,7 @@ pub struct PrometheusMetricsBuilder {
     namespace: String,
     endpoint: Option<String>,
     const_labels: HashMap<String, String>,
-    registry: Option<Registry>,
+    registry: RegistryOwnedOrStatic,
     buckets: Vec<f64>,
 }
 
@@ -181,7 +196,7 @@ impl PrometheusMetricsBuilder {
             namespace: namespace.into(),
             endpoint: None,
             const_labels: HashMap::new(),
-            registry: Some(Registry::new()),
+            registry: RegistryOwnedOrStatic::Owned(Registry::new()),
             buckets: prometheus::DEFAULT_BUCKETS.to_vec(),
         }
     }
@@ -210,16 +225,21 @@ impl PrometheusMetricsBuilder {
     ///
     /// By default one is set and is internal to PrometheusMetrics
     pub fn registry(mut self, value: Registry) -> Self {
-        self.registry = Some(value);
+        self.registry = RegistryOwnedOrStatic::Owned(value);
+        self
+    }
+
+    /// Set registry by reference
+    ///l
+    /// By default one is set and is internal to PrometheusMetrics
+    pub fn registry_ref(mut self, value: &'static Registry) -> Self {
+        self.registry = RegistryOwnedOrStatic::Static(value);
         self
     }
 
     /// Instantiate PrometheusMetrics struct
     pub fn build(self) -> Result<PrometheusMetrics, Error> {
-        let registry = match self.registry {
-            Some(registry) => registry,
-            None => Registry::new(),
-        };
+        let registry = self.registry.as_ref();
 
         let incoming_requests = IntCounterVec::new(
             Opts::new("incoming_requests", "Incoming Requests")
@@ -249,7 +269,7 @@ impl PrometheusMetricsBuilder {
 
         Ok(PrometheusMetrics {
             clock: quanta::Clock::new(),
-            registry,
+            registry: self.registry,
             namespace: self.namespace,
             endpoint: self.endpoint,
             const_labels: self.const_labels,
@@ -262,7 +282,7 @@ impl PrometheusMetricsBuilder {
 
 #[derive(Clone, Debug)]
 pub struct PrometheusMetrics {
-    pub registry: Registry,
+    pub registry: RegistryOwnedOrStatic,
     pub(crate) namespace: String,
     pub(crate) endpoint: Option<String>,
     pub(crate) const_labels: HashMap<String, String>,
@@ -277,8 +297,11 @@ impl PrometheusMetrics {
         use prometheus::{Encoder, TextEncoder};
 
         let mut buffer = vec![];
+
+        let registry = self.registry.as_ref();
+
         TextEncoder::new()
-            .encode(&self.registry.gather(), &mut buffer)
+            .encode(&registry.gather(), &mut buffer)
             .unwrap();
 
         #[cfg(feature = "process")]
